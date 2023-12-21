@@ -4,7 +4,7 @@ import (
 	"bytes"
 	"fmt"
 	"image/color"
-	"io/ioutil"
+	"os"
 	"reflect"
 	"strconv"
 	"strings"
@@ -31,6 +31,17 @@ type ActionConfig struct {
 	DBus    DBusConfig `toml:"dbus,omitempty"`
 }
 
+type HoldConfig struct {
+	TimeToHold     string `toml:"timeToHold,omitempty"`
+	WaitForRelease bool   `toml:"waitForRelease,omitempty"`
+}
+
+// ActionHoldConfig describes a hold action that can be triggered.
+type ActionHoldConfig struct {
+	*ActionConfig
+	HoldConfig
+}
+
 // WidgetConfig describes configuration data for widgets.
 type WidgetConfig struct {
 	ID       string                 `toml:"id,omitempty"`
@@ -40,10 +51,10 @@ type WidgetConfig struct {
 
 // KeyConfig holds the entire configuration for a single key.
 type KeyConfig struct {
-	Index      uint8         `toml:"index"`
-	Widget     WidgetConfig  `toml:"widget"`
-	Action     *ActionConfig `toml:"action,omitempty"`
-	ActionHold *ActionConfig `toml:"action_hold,omitempty"`
+	Index      uint8             `toml:"index"`
+	Widget     WidgetConfig      `toml:"widget"`
+	Action     *ActionConfig     `toml:"action,omitempty"`
+	ActionHold *ActionHoldConfig `toml:"action_hold,omitempty"`
 }
 
 // Keys is a slice of keys.
@@ -59,7 +70,7 @@ type DeckConfig struct {
 func LoadConfig(filename string) (DeckConfig, error) {
 	config := DeckConfig{}
 
-	b, err := ioutil.ReadFile(filename)
+	b, err := os.ReadFile(filename)
 	if err != nil {
 		return config, err
 	}
@@ -76,7 +87,7 @@ func (c DeckConfig) Save(filename string) error {
 		return err
 	}
 
-	return ioutil.WriteFile(filename, b.Bytes(), 0600)
+	return os.WriteFile(filename, b.Bytes(), 0600)
 }
 
 // ConfigValue tries to convert an interface{} to the desired type.
