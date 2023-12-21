@@ -205,7 +205,7 @@ func executeCommand(cmd string) {
 	}
 }
 
-func (d *Deck) getHoldConfiguration(dev *streamdeck.Device, index uint8) *HoldConfig {
+func (d *Deck) getHoldConfiguration(index uint8) *HoldConfig {
 	for _, w := range d.Widgets {
 		if w.Key() != index {
 			continue
