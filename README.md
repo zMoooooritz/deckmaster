@@ -334,6 +334,19 @@ You can hook up any key with several actions. A regular keypress will trigger
 the widget's configured `keys.action`, while holding the key will trigger
 `keys.action_hold`.
 
+#### Hold action
+
+Hold actions do have two additional configuration values compared to the normal action.
+`timeToHold` allows configuration of how much time has to pass in order for the press to be registered as `hold` (the default is `350ms`).
+Finally `waitForRelease` describes what happens after this time, in case the flag is set to `false` (the default) the event is triggered right away.
+Otherwise the event is triggered as soon as the button is released.
+
+```toml
+[keys.action_hold]
+  timeToHold = "500ms" # optional
+  waitForRelease = true  # optional
+```
+
 #### Switch deck
 
 ```toml
