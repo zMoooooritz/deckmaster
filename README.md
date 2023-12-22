@@ -3,7 +3,7 @@
 [![Latest Release](https://img.shields.io/github/release/muesli/deckmaster.svg?style=for-the-badge)](https://github.com/muesli/deckmaster/releases)
 [![Go Doc](https://img.shields.io/badge/godoc-reference-blue.svg?style=for-the-badge)](https://pkg.go.dev/github.com/muesli/deckmaster)
 [![Software License](https://img.shields.io/badge/license-MIT-blue.svg?style=for-the-badge)](/LICENSE)
-[![Build Status](https://img.shields.io/github/workflow/status/muesli/deckmaster/build?style=for-the-badge)](https://github.com/muesli/deckmaster/actions)
+[![Build Status](https://img.shields.io/github/actions/workflow/status/muesli/deckmaster/build.yml?branch=master&style=for-the-badge)](https://github.com/muesli/deckmaster/actions)
 [![Go ReportCard](https://goreportcard.com/badge/github.com/muesli/deckmaster?style=for-the-badge)](https://goreportcard.com/report/muesli/deckmaster)
 
 An application to control your Elgato Stream Deck on Linux
@@ -38,7 +38,7 @@ An application to control your Elgato Stream Deck on Linux
 
 ### From source
 
-Make sure you have a working Go environment (Go 1.16 or higher is required).
+Make sure you have a working Go environment (Go 1.17 or higher is required).
 See the [install instructions](https://golang.org/doc/install.html).
 
 To install deckmaster, simply run:
@@ -94,6 +94,7 @@ Description=Deckmaster Service
 # adjust the path to deckmaster and .deck file to suit your needs
 ExecStart=/usr/local/bin/deckmaster --deck path-to/some.deck
 Restart=on-failure
+ExecReload=kill -HUP $MAINPID
 
 [Install]
 WantedBy=default.target
@@ -282,6 +283,41 @@ corresponding icons with correct names need to be placed in
 `~/.local/share/deckmaster/themes/[theme]`. The default icons with their
 respective names can be found [here](https://github.com/muesli/deckmaster/tree/master/assets/weather).
 
+#### Timer
+
+A flexible widget that can display a timer/countdown.
+
+```toml
+[keys.widget]
+  id = "timer"
+  [keys.widget.config]
+    times = "5s;10m;30m;1h5m" # optional
+    font = "bold;regular;thin" # optional
+    color = "#fefefe;#0f0f0f;#00ff00;" # optional
+    adaptive = "false" # optional
+    underflow = "false" # optional
+    underflowColor = "#ff0000;#ff0000;#ff0000" # optional
+```
+
+With `layout` custom layouts can be definded in the format `[posX]x[posY]+[width]x[height]`.
+
+Values for `format` are:
+
+| %   | gets replaced with                                                 |
+| --- | ------------------------------------------------------------------ |
+| %h  | 12-hour format of an hour with leading zeros                       |
+| %H  | 24-hour format of an hour with leading zeros                       |
+| %i  | Minutes with leading zeros                                         |
+| %I  | Minutes without leading zeros                                      |
+| %s  | Seconds with leading zeros                                         |
+| %S  | Seconds without leading zeros                                      |
+
+The timer can be started and paused by short pressing the button.
+When triggering the hold action the next timer in the times list is selected if
+no timer is running. If the timer is paused, it will be reset.
+The setting underflow determines whether the timer keeps ticking after exceeding its deadline.
+The adaptive settings allows the removal of leading zeroes and delimiters that are not required for the time representation.
+
 ### Background Image
 
 You can configure each deck to display an individual wallpaper behind its
@@ -296,6 +332,19 @@ background = "/some/image.png"
 You can hook up any key with several actions. A regular keypress will trigger
 the widget's configured `keys.action`, while holding the key will trigger
 `keys.action_hold`.
+
+#### Hold action
+
+Hold actions do have two additional configuration values compared to the normal action.
+`timeToHold` allows configuration of how much time has to pass in order for the press to be registered as `hold` (the default is `350ms`).
+Finally `waitForRelease` describes what happens after this time, in case the flag is set to `false` (the default) the event is triggered right away.
+Otherwise the event is triggered as soon as the button is released.
+
+```toml
+[keys.action_hold]
+  timeToHold = "500ms" # optional
+  waitForRelease = true  # optional
+```
 
 #### Switch deck
 
@@ -374,6 +423,25 @@ pressed:
 ```toml
 [keys.action]
   device = "sleep"
+```
+
+### Background Image
+
+You can configure each deck to display an individual wallpaper behind its
+widgets:
+
+```toml
+background = "/some/image.png"
+```
+
+### Re-using another deck's configuration
+
+If you specify a `parent` inside a deck's configuration, it will inherit all
+of the parent's settings that are not overwritten by the deck's own settings.
+This even works recursively:
+
+```toml
+parent = "another.deck"
 ```
 
 ## More Decks!

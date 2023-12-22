@@ -44,7 +44,8 @@ var (
 )
 
 const (
-	longPressDuration = 350 * time.Millisecond
+	timeToHoldDefault = 350 * time.Millisecond
+	fadeDuration      = 250 * time.Millisecond
 )
 
 func fatal(v ...interface{}) {
@@ -84,6 +85,9 @@ func eventLoop(dev *streamdeck.Device, tch chan interface{}) error {
 	sigs := make(chan os.Signal, 1)
 	signal.Notify(sigs, syscall.SIGINT, syscall.SIGTERM)
 
+	hup := make(chan os.Signal, 1)
+	signal.Notify(hup, syscall.SIGHUP)
+
 	var keyStates sync.Map
 	keyTimestamps := make(map[uint8]time.Time)
 
@@ -110,18 +114,34 @@ func eventLoop(dev *streamdeck.Device, tch chan interface{}) error {
 			}
 			keyStates.Store(k.Index, k.Pressed)
 
+			holdConfig := deck.getHoldConfiguration(k.Index)
+			timeToHold := timeToHoldDefault
+			waitForRelease := false
+			if holdConfig != nil {
+				if holdConfig.TimeToHold != "" {
+					time, err := time.ParseDuration(holdConfig.TimeToHold)
+					if err == nil {
+						timeToHold = time
+					}
+				}
+				waitForRelease = holdConfig.WaitForRelease
+			}
+
 			if state && !k.Pressed {
 				// key was released
-				if time.Since(keyTimestamps[k.Index]) < longPressDuration {
+				if time.Since(keyTimestamps[k.Index]) < timeToHold {
 					verbosef("Triggering short action for key %d", k.Index)
 					deck.triggerAction(dev, k.Index, false)
+				} else if waitForRelease {
+					verbosef("Triggering long action for key %d", k.Index)
+					deck.triggerAction(dev, k.Index, true)
 				}
 			}
-			if !state && k.Pressed {
+			if !state && k.Pressed && !waitForRelease {
 				// key was pressed
 				go func() {
 					// launch timer to observe keystate
-					time.Sleep(longPressDuration)
+					time.Sleep(timeToHold)
 
 					if state, ok := keyStates.Load(k.Index); ok && state.(bool) {
 						// key still pressed
@@ -143,6 +163,19 @@ func eventLoop(dev *streamdeck.Device, tch chan interface{}) error {
 
 		case err := <-shutdown:
 			return err
+
+		case <-hup:
+			verbosef("Received SIGHUP, reloading configuration...")
+
+			nd, err := LoadDeck(dev, ".", deck.File)
+			if err != nil {
+				verbosef("The new configuration is not valid, keeping the current one.")
+				fmt.Fprintf(os.Stderr, "Configuration Error: %s\n", err)
+				continue
+			}
+
+			deck = nd
+			deck.updateWidgets()
 
 		case <-sigs:
 			fmt.Println("Shutting down...")
@@ -209,6 +242,7 @@ func initDevice() (*streamdeck.Device, error) {
 		return &dev, err
 	}
 
+	dev.SetSleepFadeDuration(fadeDuration)
 	if len(*sleep) > 0 {
 		timeout, err := time.ParseDuration(*sleep)
 		if err != nil {
