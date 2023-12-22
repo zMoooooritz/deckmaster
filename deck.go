@@ -1,6 +1,7 @@
 package main
 
 import (
+	"errors"
 	"fmt"
 	"image"
 	"image/draw"
@@ -13,6 +14,7 @@ import (
 	"time"
 
 	"github.com/atotto/clipboard"
+	"github.com/fsnotify/fsnotify"
 	"github.com/godbus/dbus"
 	"github.com/muesli/streamdeck"
 )
@@ -25,11 +27,12 @@ type Deck struct {
 }
 
 // LoadDeck loads a deck configuration.
-func LoadDeck(dev *streamdeck.Device, base string, deck string) (*Deck, error) {
-	path, err := expandPath(base, deck)
+func LoadDeck(dev *streamdeck.Device, base string, deckName string) (*Deck, error) {
+	path, err := expandPath(base, deckName)
 	if err != nil {
 		return nil, err
 	}
+	currentDeck = path
 	verbosef("Loading deck: %s", path)
 
 	dc, err := LoadConfig(path)
@@ -70,6 +73,34 @@ func LoadDeck(dev *streamdeck.Device, base string, deck string) (*Deck, error) {
 
 		d.Widgets = append(d.Widgets, w)
 	}
+
+	watcher, err := fsnotify.NewWatcher()
+	if err != nil {
+		return nil, errors.Unwrap(err)
+	}
+	err = watcher.Add(path)
+	if err != nil {
+		return nil, errors.Unwrap(err)
+	}
+
+	go func() {
+		for event := range watcher.Events {
+			if currentDeck == path {
+				fmt.Printf("Change:  %s: %s\n", event.Op, event.Name)
+				d, err := LoadDeck(dev, base, deckName)
+				if err != nil {
+					fatal(err)
+				}
+				err = dev.Clear()
+				if err != nil {
+					fatal(err)
+				}
+
+				deck = d
+				return
+			}
+		}
+	}()
 
 	return &d, nil
 }

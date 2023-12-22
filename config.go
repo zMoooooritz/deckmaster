@@ -34,7 +34,7 @@ type ActionConfig struct {
 	DBus    DBusConfig `toml:"dbus,omitempty"`
 }
 
-// HoldConfig holds additional configuraton for hold actions
+// HoldConfig holds additional configuraton for hold actions.
 type HoldConfig struct {
 	TimeToHold     string `toml:"timeToHold,omitempty"`
 	WaitForRelease bool   `toml:"waitForRelease,omitempty"`
