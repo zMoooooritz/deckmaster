@@ -1,9 +1,11 @@
 package main
 
 import (
+	"errors"
 	"fmt"
 	"image"
 	"image/draw"
+	"math"
 	"os"
 	"os/exec"
 	"path/filepath"
@@ -31,7 +33,7 @@ func LoadDeck(dev *streamdeck.Device, base string, deckName string) (*Deck, erro
 		return nil, err
 	}
 	currentDeck = path
-	fmt.Println("Loading deck:", path)
+	verbosef("Loading deck: %s", path)
 
 	dc, err := LoadConfig(path)
 	if err != nil {
@@ -73,27 +75,29 @@ func LoadDeck(dev *streamdeck.Device, base string, deckName string) (*Deck, erro
 	}
 
 	watcher, err := fsnotify.NewWatcher()
+	if err != nil {
+		return nil, errors.Unwrap(err)
+	}
 	err = watcher.Add(path)
+	if err != nil {
+		return nil, errors.Unwrap(err)
+	}
 
 	go func() {
-		for {
-			select {
-			case event := <-watcher.Events:
-				if currentDeck == path {
-					fmt.Printf("Change:  %s: %s\n", event.Op, event.Name)
-					d, err := LoadDeck(dev, base, deckName)
-					if err != nil {
-						fatal(err)
-					}
-					err = dev.Clear()
-					if err != nil {
-						fatal(err)
-					}
-
-					deck = d
-					deck.updateWidgets()
-					return
+		for event := range watcher.Events {
+			if currentDeck == path {
+				fmt.Printf("Change:  %s: %s\n", event.Op, event.Name)
+				d, err := LoadDeck(dev, base, deckName)
+				if err != nil {
+					fatal(err)
 				}
+				err = dev.Clear()
+				if err != nil {
+					fatal(err)
+				}
+
+				deck = d
+				return
 			}
 		}
 	}()
@@ -169,7 +173,7 @@ func emulateKeyPresses(keys string) {
 // emulates a (multi-)key press.
 func emulateKeyPress(keys string) {
 	if keyboard == nil {
-		fmt.Println("Keyboard emulation is disabled!")
+		fmt.Fprintln(os.Stderr, "Keyboard emulation is disabled!")
 		return
 	}
 
@@ -178,7 +182,7 @@ func emulateKeyPress(keys string) {
 		k = formatKeycodes(strings.TrimSpace(k))
 		kc, err := strconv.Atoi(k)
 		if err != nil {
-			fatalf("%s is not a valid keycode: %s\n", k, err)
+			fmt.Fprintf(os.Stderr, "%s is not a valid keycode: %s\n", k, err)
 		}
 
 		if i+1 < len(kk) {
@@ -194,7 +198,7 @@ func emulateKeyPress(keys string) {
 func emulateClipboard(text string) {
 	err := clipboard.WriteAll(text)
 	if err != nil {
-		fatalf("Pasting to clipboard failed: %s\n", err)
+		fmt.Fprintf(os.Stderr, "Pasting to clipboard failed: %s\n", err)
 	}
 
 	// paste the string
@@ -205,7 +209,7 @@ func emulateClipboard(text string) {
 func executeDBusMethod(object, path, method, args string) {
 	call := dbusConn.Object(object, dbus.ObjectPath(path)).Call(method, 0, args)
 	if call.Err != nil {
-		fmt.Printf("dbus call failed: %s\n", call.Err)
+		fmt.Fprintf(os.Stderr, "dbus call failed: %s\n", call.Err)
 	}
 }
 
@@ -216,57 +220,92 @@ func executeCommand(cmd string) {
 		cmd = exp
 	}
 	args := strings.Split(cmd, " ")
+
 	c := exec.Command(args[0], args[1:]...) //nolint:gosec
-	if err := c.Start(); err != nil {
-		fmt.Printf("command failed: %s\n", err)
-		return
+	if *verbose {
+		c.Stdout = os.Stdout
+		c.Stderr = os.Stderr
 	}
 
-	if err := c.Wait(); err != nil {
-		fmt.Printf("command failed: %s\n", err)
+	if err := c.Start(); err != nil {
+		fmt.Fprintf(os.Stderr, "Command failed: %s\n", err)
+		return
 	}
+	if err := c.Wait(); err != nil {
+		fmt.Fprintf(os.Stderr, "Command failed: %s\n", err)
+	}
+}
+
+func (d *Deck) getHoldConfiguration(index uint8) *HoldConfig {
+	for _, w := range d.Widgets {
+		if w.Key() != index {
+			continue
+		}
+
+		if w.ActionHold() != nil {
+			return &w.ActionHold().HoldConfig
+		}
+	}
+	return nil
 }
 
 // triggerAction triggers an action.
 func (d *Deck) triggerAction(dev *streamdeck.Device, index uint8, hold bool) {
 	for _, w := range d.Widgets {
-		if w.Key() == index {
-			var a *ActionConfig
-			if hold {
-				a = w.ActionHold()
-			} else {
-				a = w.Action()
+		if w.Key() != index {
+			continue
+		}
+
+		var a *ActionConfig
+		if hold {
+			a = w.ActionHold().ActionConfig
+		} else {
+			a = w.Action()
+		}
+
+		if a == nil {
+			w.TriggerAction(hold)
+			continue
+		}
+
+		if a.Deck != "" {
+			d, err := LoadDeck(dev, filepath.Dir(d.File), a.Deck)
+			if err != nil {
+				fmt.Fprintln(os.Stderr, "Can't load deck:", err)
+				return
+			}
+			if err := dev.Clear(); err != nil {
+				fatal(err)
+				return
 			}
 
-			if a != nil {
-				// fmt.Println("Executing overloaded action")
-				if a.Deck != "" {
-					d, err := LoadDeck(dev, filepath.Dir(d.File), a.Deck)
-					if err != nil {
-						fatal(err)
-					}
-					err = dev.Clear()
-					if err != nil {
-						fatal(err)
-					}
+			deck = d
+			deck.updateWidgets()
+		}
+		if a.Keycode != "" {
+			emulateKeyPresses(a.Keycode)
+		}
+		if a.Paste != "" {
+			emulateClipboard(a.Paste)
+		}
+		if a.DBus.Method != "" {
+			executeDBusMethod(a.DBus.Object, a.DBus.Path, a.DBus.Method, a.DBus.Value)
+		}
+		if a.Exec != "" {
+			go executeCommand(a.Exec)
+		}
+		if a.Device != "" {
+			switch {
+			case a.Device == "sleep":
+				if err := dev.Sleep(); err != nil {
+					fatalf("error: %v\n", err)
+				}
 
-					deck = d
-					deck.updateWidgets()
-				}
-				if a.Keycode != "" {
-					emulateKeyPresses(a.Keycode)
-				}
-				if a.Paste != "" {
-					emulateClipboard(a.Paste)
-				}
-				if a.DBus.Method != "" {
-					executeDBusMethod(a.DBus.Object, a.DBus.Path, a.DBus.Method, a.DBus.Value)
-				}
-				if a.Exec != "" {
-					go executeCommand(a.Exec)
-				}
-			} else {
-				w.TriggerAction(hold)
+			case strings.HasPrefix(a.Device, "brightness"):
+				d.adjustBrightness(dev, strings.TrimPrefix(a.Device, "brightness"))
+
+			default:
+				fmt.Fprintln(os.Stderr, "Unrecognized special action:", a.Device)
 			}
 		}
 	}
@@ -281,7 +320,55 @@ func (d *Deck) updateWidgets() {
 
 		// fmt.Println("Repaint", w.Key())
 		if err := w.Update(); err != nil {
-			fatalf("error: %v\n", err)
+			fatalf("error: %v", err)
 		}
 	}
+}
+
+// adjustBrightness adjusts the brightness.
+func (d *Deck) adjustBrightness(dev *streamdeck.Device, value string) {
+	if len(value) == 0 {
+		fmt.Fprintln(os.Stderr, "No brightness value specified")
+		return
+	}
+
+	v := int64(math.MinInt64)
+	if len(value) > 1 {
+		nv, err := strconv.ParseInt(value[1:], 10, 64)
+		if err == nil {
+			v = nv
+		}
+	}
+
+	switch value[0] {
+	case '=': // brightness=[n]:
+	case '-': // brightness-[n]:
+		if v == math.MinInt64 {
+			v = 10
+		}
+		v = int64(*brightness) - v
+	case '+': // brightness+[n]:
+		if v == math.MinInt64 {
+			v = 10
+		}
+		v = int64(*brightness) + v
+	default:
+		v = math.MinInt64
+	}
+
+	if v == math.MinInt64 {
+		fmt.Fprintf(os.Stderr, "Could not grok the brightness from value '%s'\n", value)
+		return
+	}
+
+	if v < 1 {
+		v = 1
+	} else if v > 100 {
+		v = 100
+	}
+	if err := dev.SetBrightness(uint8(v)); err != nil {
+		fatalf("error: %v\n", err)
+	}
+
+	*brightness = uint(v)
 }

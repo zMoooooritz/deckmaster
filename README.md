@@ -1,9 +1,10 @@
 # deckmaster
 
-[![Latest Release](https://img.shields.io/github/release/muesli/deckmaster.svg)](https://github.com/muesli/deckmaster/releases)
-[![Build Status](https://github.com/muesli/deckmaster/workflows/build/badge.svg)](https://github.com/muesli/deckmaster/actions)
-[![Go ReportCard](https://goreportcard.com/badge/muesli/deckmaster)](https://goreportcard.com/report/muesli/deckmaster)
-[![GoDoc](https://godoc.org/github.com/golang/gddo?status.svg)](https://pkg.go.dev/github.com/muesli/deckmaster)
+[![Latest Release](https://img.shields.io/github/release/muesli/deckmaster.svg?style=for-the-badge)](https://github.com/muesli/deckmaster/releases)
+[![Go Doc](https://img.shields.io/badge/godoc-reference-blue.svg?style=for-the-badge)](https://pkg.go.dev/github.com/muesli/deckmaster)
+[![Software License](https://img.shields.io/badge/license-MIT-blue.svg?style=for-the-badge)](/LICENSE)
+[![Build Status](https://img.shields.io/github/actions/workflow/status/muesli/deckmaster/build.yml?branch=master&style=for-the-badge)](https://github.com/muesli/deckmaster/actions)
+[![Go ReportCard](https://goreportcard.com/badge/github.com/muesli/deckmaster?style=for-the-badge)](https://goreportcard.com/report/muesli/deckmaster)
 
 An application to control your Elgato Stream Deck on Linux
 
@@ -37,7 +38,7 @@ An application to control your Elgato Stream Deck on Linux
 
 ### From source
 
-Make sure you have a working Go environment (Go 1.12 or higher is required).
+Make sure you have a working Go environment (Go 1.17 or higher is required).
 See the [install instructions](https://golang.org/doc/install.html).
 
 To install deckmaster, simply run:
@@ -48,20 +49,20 @@ To install deckmaster, simply run:
 
 ## System Setup
 
-On Linux you need to set up some udev rules to be able to access the device as a
-regular user. Edit `/etc/udev/rules.d/99-streamdeck.rules` and add these lines:
+On Linux you need to set up some `udev` rules to be able to access the device as
+a regular user. Edit `/etc/udev/rules.d/99-streamdeck.rules` and add these lines:
 
 ```
-SUBSYSTEM=="usb", ATTRS{idVendor}=="0fd9", ATTRS{idProduct}=="0060", MODE:="666", GROUP="plugdev", SYMLINK+="streamdeck"
-SUBSYSTEM=="usb", ATTRS{idVendor}=="0fd9", ATTRS{idProduct}=="006d", MODE:="666", GROUP="plugdev", SYMLINK+="streamdeck"
-SUBSYSTEM=="usb", ATTRS{idVendor}=="0fd9", ATTRS{idProduct}=="0080", MODE:="666", GROUP="plugdev", SYMLINK+="streamdeck"
-SUBSYSTEM=="usb", ATTRS{idVendor}=="0fd9", ATTRS{idProduct}=="0063", MODE:="666", GROUP="plugdev", SYMLINK+="streamdeck-mini"
-SUBSYSTEM=="usb", ATTRS{idVendor}=="0fd9", ATTRS{idProduct}=="006c", MODE:="666", GROUP="plugdev", SYMLINK+="streamdeck-xl"
+SUBSYSTEM=="usb", ATTRS{idVendor}=="0fd9", ATTRS{idProduct}=="0060", TAG+="uaccess", SYMLINK+="streamdeck"
+SUBSYSTEM=="usb", ATTRS{idVendor}=="0fd9", ATTRS{idProduct}=="006d", TAG+="uaccess", SYMLINK+="streamdeck"
+SUBSYSTEM=="usb", ATTRS{idVendor}=="0fd9", ATTRS{idProduct}=="0080", TAG+="uaccess", SYMLINK+="streamdeck"
+SUBSYSTEM=="usb", ATTRS{idVendor}=="0fd9", ATTRS{idProduct}=="0063", TAG+="uaccess", SYMLINK+="streamdeck-mini"
+SUBSYSTEM=="usb", ATTRS{idVendor}=="0fd9", ATTRS{idProduct}=="0090", TAG+="uaccess", SYMLINK+="streamdeck-mini"
+SUBSYSTEM=="usb", ATTRS{idVendor}=="0fd9", ATTRS{idProduct}=="006c", TAG+="uaccess", SYMLINK+="streamdeck-xl"
 ```
 
-Make sure your user is part of the `plugdev` group and reload the rules with
-`sudo udevadm control --reload-rules`. Unplug and replug the device and you
-should be good to go.
+Reload the rules with `sudo udevadm control --reload-rules`. Unplug and re-plug
+the device, and you should be good to go.
 
 ### Starting deckmaster automatically
 
@@ -94,6 +95,7 @@ Description=Deckmaster Service
 # adjust the path to deckmaster and .deck file to suit your needs
 ExecStart=/usr/local/bin/deckmaster --deck path-to/some.deck
 Restart=on-failure
+ExecReload=kill -HUP $MAINPID
 
 [Install]
 WantedBy=default.target
@@ -126,10 +128,35 @@ Control a specific streamdeck:
 deckmaster -device [serial number]
 ```
 
+Set a sleep timeout after which the screen gets turned off:
+
+```bash
+deckmaster -sleep 10m
+```
+
 ## Configuration
 
 You can find a few example configurations in the [decks](https://github.com/muesli/deckmaster/tree/master/decks)
 directory. Edit them to your needs!
+
+### Background Image
+
+You can configure each deck to display an individual wallpaper behind its
+widgets:
+
+```toml
+background = "/some/image.png"
+```
+
+### Re-using another deck's configuration
+
+If you specify a `parent` inside a deck's configuration, it will inherit all
+of the parent's settings that are not overwritten by the deck's own settings.
+This even works recursively:
+
+```toml
+parent = "another.deck"
+```
 
 ### Widgets
 
@@ -184,7 +211,11 @@ activates the window.
   id = "recentWindow"
   [keys.widget.config]
     window = 1
+    showTitle = true # optional
 ```
+
+If `showTitle` is `true`, the title of the window will be displayed below the
+window icon.
 
 #### Time
 
@@ -272,6 +303,41 @@ corresponding icons with correct names need to be placed in
 `~/.local/share/deckmaster/themes/[theme]`. The default icons with their
 respective names can be found [here](https://github.com/muesli/deckmaster/tree/master/assets/weather).
 
+#### Timer
+
+A flexible widget that can display a timer/countdown.
+
+```toml
+[keys.widget]
+  id = "timer"
+  [keys.widget.config]
+    times = "5s;10m;30m;1h5m" # optional
+    font = "bold;regular;thin" # optional
+    color = "#fefefe;#0f0f0f;#00ff00;" # optional
+    adaptive = "false" # optional
+    underflow = "false" # optional
+    underflowColor = "#ff0000;#ff0000;#ff0000" # optional
+```
+
+With `layout` custom layouts can be definded in the format `[posX]x[posY]+[width]x[height]`.
+
+Values for `format` are:
+
+| %   | gets replaced with                                                 |
+| --- | ------------------------------------------------------------------ |
+| %h  | 12-hour format of an hour with leading zeros                       |
+| %H  | 24-hour format of an hour with leading zeros                       |
+| %i  | Minutes with leading zeros                                         |
+| %I  | Minutes without leading zeros                                      |
+| %s  | Seconds with leading zeros                                         |
+| %S  | Seconds without leading zeros                                      |
+
+The timer can be started and paused by short pressing the button.
+When triggering the hold action the next timer in the times list is selected if
+no timer is running. If the timer is paused, it will be reset.
+The setting underflow determines whether the timer keeps ticking after exceeding its deadline.
+The adaptive settings allows the removal of leading zeroes and delimiters that are not required for the time representation.
+
 ### Background Image
 
 You can configure each deck to display an individual wallpaper behind its
@@ -283,7 +349,29 @@ background = "/some/image.png"
 
 ### Actions
 
-You can hook up any key with several actions:
+You can hook up any key with several actions. A regular keypress will trigger
+the widget's configured `keys.action`, while holding the key will trigger
+`keys.action_hold`.
+
+#### Hold action
+
+Hold actions do have two additional configuration values compared to the normal action.
+`timeToHold` allows configuration of how much time has to pass in order for the press to be registered as `hold` (the default is `350ms`).
+Finally `waitForRelease` describes what happens after this time, in case the flag is set to `false` (the default) the event is triggered right away.
+Otherwise the event is triggered as soon as the button is released.
+
+```toml
+[keys.action_hold]
+  timeToHold = "500ms" # optional
+  waitForRelease = true  # optional
+```
+
+#### Switch deck
+
+```toml
+[keys.action]
+  deck = "relative/path/to/another.deck"
+```
 
 #### Run a command
 
@@ -306,13 +394,13 @@ Emulate a series of key-presses with delay in between:
   keycode = "Leftctrl-X+500 / Leftctrl-V / Num1"
 ```
 
-A list of available keycodes can be found here: [keycodes](https://github.com/muesli/deckmaster/blob/master/keycodes.go)
+A list of available `keycodes` can be found here: [keycodes](https://github.com/muesli/deckmaster/blob/master/keycodes.go)
 
 #### Paste to clipboard
 
 ```toml
 [keys.action]
-  paste = "a text"
+  paste = "some text"
 ```
 
 #### Trigger a dbus call
@@ -326,6 +414,46 @@ A list of available keycodes can be found here: [keycodes](https://github.com/mu
     value = "value"
 ```
 
+#### Device actions
+
+Increase the brightness. If no value is specified, it will be increased by 10%:
+
+```toml
+[keys.action]
+  device = "brightness+5"
+```
+
+Decrease the brightness. If no value is specified, it will be decreased by 10%:
+
+```toml
+[keys.action]
+  device = "brightness-5"
+```
+
+Set the brightness to a specific value between 0 and 100:
+
+```toml
+[keys.action]
+  device = "brightness=50"
+```
+
+Put the device into sleep mode, blanking the screen until the next key gets
+pressed:
+
+```toml
+[keys.action]
+  device = "sleep"
+```
+
 ## More Decks!
 
 [deckmaster-emojis](https://github.com/muesli/deckmaster-emojis), an Emoji keyboard deck
+
+Made your own useful decks? Submit a pull request!
+
+## Feedback
+
+Got some feedback or suggestions? Please open an issue or drop me a note!
+
+* [Twitter](https://twitter.com/mueslix)
+* [The Fediverse](https://mastodon.social/@fribbledom)

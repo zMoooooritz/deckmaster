@@ -1,11 +1,14 @@
 package main
 
 import (
+	"errors"
 	"flag"
 	"fmt"
 	"os"
+	"os/signal"
 	"path/filepath"
 	"sync"
+	"syscall"
 	"time"
 
 	"github.com/bendahl/uinput"
@@ -15,11 +18,20 @@ import (
 )
 
 var (
+	// Version contains the application version number. It's set via ldflags
+	// when building.
+	Version = ""
+
+	// CommitSHA contains the SHA of the commit that this application was built
+	// against. It's set via ldflags when building.
+	CommitSHA = ""
+
 	deck        *Deck
 	currentDeck string
 
 	dbusConn *dbus.Conn
 	keyboard uinput.Keyboard
+	shutdown = make(chan error)
 
 	xorg          *Xorg
 	recentWindows []Window
@@ -27,20 +39,30 @@ var (
 	deckFile   = flag.String("deck", "main.deck", "path to deck config file")
 	device     = flag.String("device", "", "which device to use (serial number)")
 	brightness = flag.Uint("brightness", 80, "brightness in percent")
+	sleep      = flag.String("sleep", "", "sleep timeout")
+	verbose    = flag.Bool("verbose", false, "verbose output")
+	version    = flag.Bool("version", false, "display version")
 )
 
 const (
-	longPressDuration = 350 * time.Millisecond
+	timeToHoldDefault = 350 * time.Millisecond
+	fadeDuration      = 250 * time.Millisecond
 )
 
 func fatal(v ...interface{}) {
-	fmt.Fprintln(os.Stderr, v...)
-	os.Exit(1)
+	go func() { shutdown <- errors.New(fmt.Sprint(v...)) }()
 }
 
 func fatalf(format string, a ...interface{}) {
-	fmt.Fprintf(os.Stderr, format, a...)
-	os.Exit(1)
+	go func() { shutdown <- fmt.Errorf(format, a...) }()
+}
+
+func verbosef(format string, a ...interface{}) {
+	if !*verbose {
+		return
+	}
+
+	fmt.Printf(format+"\n", a...)
 }
 
 func expandPath(base, path string) (string, error) {
@@ -60,13 +82,19 @@ func expandPath(base, path string) (string, error) {
 	return filepath.Abs(path)
 }
 
-func eventLoop(dev *streamdeck.Device, tch chan interface{}) {
+func eventLoop(dev *streamdeck.Device, tch chan interface{}) error {
+	sigs := make(chan os.Signal, 1)
+	signal.Notify(sigs, syscall.SIGINT, syscall.SIGTERM)
+
+	hup := make(chan os.Signal, 1)
+	signal.Notify(hup, syscall.SIGHUP)
+
 	var keyStates sync.Map
 	keyTimestamps := make(map[uint8]time.Time)
 
 	kch, err := dev.ReadKeys()
 	if err != nil {
-		fatal(err)
+		return err
 	}
 	for {
 		select {
@@ -75,9 +103,8 @@ func eventLoop(dev *streamdeck.Device, tch chan interface{}) {
 
 		case k, ok := <-kch:
 			if !ok {
-				err = dev.Open()
-				if err != nil {
-					fatal(err)
+				if err = dev.Open(); err != nil {
+					return err
 				}
 				continue
 			}
@@ -88,22 +115,38 @@ func eventLoop(dev *streamdeck.Device, tch chan interface{}) {
 			}
 			keyStates.Store(k.Index, k.Pressed)
 
+			holdConfig := deck.getHoldConfiguration(k.Index)
+			timeToHold := timeToHoldDefault
+			waitForRelease := false
+			if holdConfig != nil {
+				if holdConfig.TimeToHold != "" {
+					time, err := time.ParseDuration(holdConfig.TimeToHold)
+					if err == nil {
+						timeToHold = time
+					}
+				}
+				waitForRelease = holdConfig.WaitForRelease
+			}
+
 			if state && !k.Pressed {
 				// key was released
-				if time.Since(keyTimestamps[k.Index]) < longPressDuration {
-					// fmt.Println("Triggering short action")
+				if time.Since(keyTimestamps[k.Index]) < timeToHold {
+					verbosef("Triggering short action for key %d", k.Index)
 					deck.triggerAction(dev, k.Index, false)
+				} else if waitForRelease {
+					verbosef("Triggering long action for key %d", k.Index)
+					deck.triggerAction(dev, k.Index, true)
 				}
 			}
-			if !state && k.Pressed {
+			if !state && k.Pressed && !waitForRelease {
 				// key was pressed
 				go func() {
 					// launch timer to observe keystate
-					time.Sleep(longPressDuration)
+					time.Sleep(timeToHold)
 
 					if state, ok := keyStates.Load(k.Index); ok && state.(bool) {
 						// key still pressed
-						// fmt.Println("Triggering long action")
+						verbosef("Triggering long action for key %d", k.Index)
 						deck.triggerAction(dev, k.Index, true)
 					}
 				}()
@@ -118,14 +161,43 @@ func eventLoop(dev *streamdeck.Device, tch chan interface{}) {
 			case ActiveWindowChangedEvent:
 				handleActiveWindowChanged(dev, event)
 			}
+
+		case err := <-shutdown:
+			return err
+
+		case <-hup:
+			verbosef("Received SIGHUP, reloading configuration...")
+
+			nd, err := LoadDeck(dev, ".", deck.File)
+			if err != nil {
+				verbosef("The new configuration is not valid, keeping the current one.")
+				fmt.Fprintf(os.Stderr, "Configuration Error: %s\n", err)
+				continue
+			}
+
+			deck = nd
+			deck.updateWidgets()
+
+		case <-sigs:
+			fmt.Println("Shutting down...")
+			return nil
 		}
+	}
+}
+
+func closeDevice(dev *streamdeck.Device) {
+	if err := dev.Reset(); err != nil {
+		fmt.Fprintln(os.Stderr, "Unable to reset Stream Deck")
+	}
+	if err := dev.Close(); err != nil {
+		fmt.Fprintln(os.Stderr, "Unable to close Stream Deck")
 	}
 }
 
 func initDevice() (*streamdeck.Device, error) {
 	d, err := streamdeck.Devices()
 	if err != nil {
-		fatal(err)
+		return nil, err
 	}
 	if len(d) == 0 {
 		return nil, fmt.Errorf("no Stream Deck devices found")
@@ -142,9 +214,9 @@ func initDevice() (*streamdeck.Device, error) {
 			}
 		}
 		if !found {
-			fmt.Println("Can't find device. Available devices:")
+			fmt.Fprintln(os.Stderr, "Can't find device. Available devices:")
 			for _, v := range d {
-				fmt.Printf("Serial %s (%d buttons)\n", v.Serial, dev.Keys)
+				fmt.Fprintf(os.Stderr, "Serial %s (%d buttons)\n", v.Serial, dev.Keys)
 			}
 			os.Exit(1)
 		}
@@ -155,38 +227,49 @@ func initDevice() (*streamdeck.Device, error) {
 	}
 	ver, err := dev.FirmwareVersion()
 	if err != nil {
-		return nil, err
+		return &dev, err
 	}
-	fmt.Printf("Found device with serial %s (%d buttons, firmware %s)\n",
+	verbosef("Found device with serial %s (%d buttons, firmware %s)",
 		dev.Serial, dev.Keys, ver)
 
 	if err := dev.Reset(); err != nil {
-		return nil, err
+		return &dev, err
 	}
 
 	if *brightness > 100 {
 		*brightness = 100
 	}
 	if err = dev.SetBrightness(uint8(*brightness)); err != nil {
-		return nil, err
+		return &dev, err
+	}
+
+	dev.SetSleepFadeDuration(fadeDuration)
+	if len(*sleep) > 0 {
+		timeout, err := time.ParseDuration(*sleep)
+		if err != nil {
+			return &dev, err
+		}
+
+		dev.SetSleepTimeout(timeout)
 	}
 
 	return &dev, nil
 }
 
-func main() {
-	flag.Parse()
-
+func run() error {
 	// initialize device
 	dev, err := initDevice()
+	if dev != nil {
+		defer closeDevice(dev)
+	}
 	if err != nil {
-		fatal(err)
+		return fmt.Errorf("Unable to initialize Stream Deck: %s", err)
 	}
 
 	// initialize dbus connection
 	dbusConn, err = dbus.SessionBus()
 	if err != nil {
-		fatal(err)
+		return fmt.Errorf("Unable to connect to dbus: %s", err)
 	}
 
 	// initialize xorg connection and track window focus
@@ -196,15 +279,15 @@ func main() {
 		defer xorg.Close()
 		xorg.TrackWindows(tch, time.Second)
 	} else {
-		fmt.Printf("Could not connect to X server: %s\n", err)
-		fmt.Println("Tracking window manager will be disabled!")
+		fmt.Fprintf(os.Stderr, "Could not connect to X server: %s\n", err)
+		fmt.Fprintln(os.Stderr, "Tracking window manager will be disabled!")
 	}
 
 	// initialize virtual keyboard
 	keyboard, err = uinput.CreateKeyboard("/dev/uinput", []byte("Deckmaster"))
 	if err != nil {
-		fmt.Printf("Could not create virtual input device (/dev/uinput): %s\n", err)
-		fmt.Println("Emulating keyboard events will be disabled!")
+		fmt.Fprintf(os.Stderr, "Could not create virtual input device (/dev/uinput): %s\n", err)
+		fmt.Fprintln(os.Stderr, "Emulating keyboard events will be disabled!")
 	} else {
 		defer keyboard.Close() //nolint:errcheck
 	}
@@ -212,9 +295,35 @@ func main() {
 	// load deck
 	deck, err = LoadDeck(dev, ".", *deckFile)
 	if err != nil {
-		fatal(err)
+		return fmt.Errorf("Can't load deck: %s", err)
 	}
 	deck.updateWidgets()
 
-	eventLoop(dev, tch)
+	return eventLoop(dev, tch)
+}
+
+func main() {
+	flag.Parse()
+
+	if *version {
+		if len(CommitSHA) > 7 {
+			CommitSHA = CommitSHA[:7]
+		}
+		if Version == "" {
+			Version = "(built from source)"
+		}
+
+		fmt.Printf("deckmaster %s", Version)
+		if len(CommitSHA) > 0 {
+			fmt.Printf(" (%s)", CommitSHA)
+		}
+
+		fmt.Println()
+		os.Exit(0)
+	}
+
+	if err := run(); err != nil {
+		fmt.Fprintln(os.Stderr, err)
+		os.Exit(1)
+	}
 }

@@ -26,7 +26,7 @@ type Widget interface {
 	RequiresUpdate() bool
 	Update() error
 	Action() *ActionConfig
-	ActionHold() *ActionConfig
+	ActionHold() *ActionHoldConfig
 	TriggerAction(hold bool)
 }
 
@@ -35,7 +35,7 @@ type BaseWidget struct {
 	base       string
 	key        uint8
 	action     *ActionConfig
-	actionHold *ActionConfig
+	actionHold *ActionHoldConfig
 	dev        *streamdeck.Device
 	background image.Image
 	lastUpdate time.Time
@@ -53,7 +53,7 @@ func (w *BaseWidget) Action() *ActionConfig {
 }
 
 // ActionHold returns the associated ActionConfig for long presses.
-func (w *BaseWidget) ActionHold() *ActionConfig {
+func (w *BaseWidget) ActionHold() *ActionHoldConfig {
 	return w.actionHold
 }
 
@@ -79,7 +79,7 @@ func (w *BaseWidget) Update() error {
 }
 
 // NewBaseWidget returns a new BaseWidget.
-func NewBaseWidget(dev *streamdeck.Device, base string, index uint8, action, actionHold *ActionConfig, bg image.Image) *BaseWidget {
+func NewBaseWidget(dev *streamdeck.Device, base string, index uint8, action *ActionConfig, actionHold *ActionHoldConfig, bg image.Image) *BaseWidget {
 	return &BaseWidget{
 		base:       base,
 		key:        index,
@@ -124,6 +124,9 @@ func NewWidget(dev *streamdeck.Device, base string, kc KeyConfig, bg image.Image
 
 	case "weather":
 		return NewWeatherWidget(bw, kc.Widget)
+
+	case "timer":
+		return NewTimerWidget(bw, kc.Widget), nil
 	}
 
 	// unknown widget ID
@@ -239,6 +242,7 @@ func drawString(img *image.RGBA, bounds image.Rectangle, ttf *truetype.Font, tex
 
 	c.SetSrc(image.NewUniform(color))
 	if _, err := c.DrawString(text, freetype.Pt(pt.X, pt.Y)); err != nil {
-		fatal(err)
+		fmt.Fprintf(os.Stderr, "Can't render string: %s\n", err)
+		return
 	}
 }
