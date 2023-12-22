@@ -5,11 +5,12 @@ import (
 	"errors"
 	"fmt"
 	"image/color"
-	"io/ioutil"
+	"os"
 	"path/filepath"
 	"reflect"
 	"strconv"
 	"strings"
+	"time"
 
 	"github.com/BurntSushi/toml"
 	colorful "github.com/lucasb-eyer/go-colorful"
@@ -33,6 +34,18 @@ type ActionConfig struct {
 	DBus    DBusConfig `toml:"dbus,omitempty"`
 }
 
+// HoldConfig holds additional configuraton for hold actions.
+type HoldConfig struct {
+	TimeToHold     string `toml:"timeToHold,omitempty"`
+	WaitForRelease bool   `toml:"waitForRelease,omitempty"`
+}
+
+// ActionHoldConfig describes a hold action that can be triggered.
+type ActionHoldConfig struct {
+	*ActionConfig
+	HoldConfig
+}
+
 // WidgetConfig describes configuration data for widgets.
 type WidgetConfig struct {
 	ID       string                 `toml:"id,omitempty"`
@@ -42,10 +55,10 @@ type WidgetConfig struct {
 
 // KeyConfig holds the entire configuration for a single key.
 type KeyConfig struct {
-	Index      uint8         `toml:"index"`
-	Widget     WidgetConfig  `toml:"widget"`
-	Action     *ActionConfig `toml:"action,omitempty"`
-	ActionHold *ActionConfig `toml:"action_hold,omitempty"`
+	Index      uint8             `toml:"index"`
+	Widget     WidgetConfig      `toml:"widget"`
+	Action     *ActionConfig     `toml:"action,omitempty"`
+	ActionHold *ActionHoldConfig `toml:"action_hold,omitempty"`
 }
 
 // Keys is a slice of keys.
@@ -98,7 +111,7 @@ func LoadConfigFromFile(base, path string, files []string) (DeckConfig, error) {
 		}
 	}
 
-	file, err := ioutil.ReadFile(filename)
+	file, err := os.ReadFile(filename)
 	if err != nil {
 		return config, err
 	}
@@ -133,7 +146,7 @@ func (c DeckConfig) Save(filename string) error {
 		return err
 	}
 
-	return ioutil.WriteFile(filename, b.Bytes(), 0600)
+	return os.WriteFile(filename, b.Bytes(), 0600)
 }
 
 // ConfigValue tries to convert an interface{} to the desired type.
@@ -194,6 +207,14 @@ func ConfigValue(v interface{}, dst interface{}) error {
 		default:
 			return fmt.Errorf("unhandled type %+v for color.Color conversion", reflect.TypeOf(vt))
 		}
+	case *time.Duration:
+		switch vt := v.(type) {
+		case string:
+			x, _ := time.ParseDuration(vt)
+			*d = x
+		default:
+			return fmt.Errorf("unhandled type %+v for time.Duration conversion", reflect.TypeOf(vt))
+		}
 
 	case *[]string:
 		switch vt := v.(type) {
@@ -215,6 +236,19 @@ func ConfigValue(v interface{}, dst interface{}) error {
 			*d = clrs
 		default:
 			return fmt.Errorf("unhandled type %+v for []color.Color conversion", reflect.TypeOf(vt))
+		}
+	case *[]time.Duration:
+		switch vt := v.(type) {
+		case string:
+			durationsString := strings.Split(vt, ";")
+			var durations []time.Duration
+			for _, durationString := range durationsString {
+				duration, _ := time.ParseDuration(durationString)
+				durations = append(durations, duration)
+			}
+			*d = durations
+		default:
+			return fmt.Errorf("unhandled type %+v for []time.Duration conversion", reflect.TypeOf(vt))
 		}
 
 	default:
