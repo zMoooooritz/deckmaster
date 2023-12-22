@@ -205,6 +205,19 @@ func executeCommand(cmd string) {
 	}
 }
 
+func (d *Deck) getHoldConfiguration(index uint8) *HoldConfig {
+	for _, w := range d.Widgets {
+		if w.Key() != index {
+			continue
+		}
+
+		if w.ActionHold() != nil {
+			return &w.ActionHold().HoldConfig
+		}
+	}
+	return nil
+}
+
 // triggerAction triggers an action.
 func (d *Deck) triggerAction(dev *streamdeck.Device, index uint8, hold bool) {
 	for _, w := range d.Widgets {
@@ -214,7 +227,7 @@ func (d *Deck) triggerAction(dev *streamdeck.Device, index uint8, hold bool) {
 
 		var a *ActionConfig
 		if hold {
-			a = w.ActionHold()
+			a = w.ActionHold().ActionConfig
 		} else {
 			a = w.Action()
 		}
